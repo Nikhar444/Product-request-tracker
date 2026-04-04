@@ -1,64 +1,57 @@
 // app/api/search/route.ts
-// Search Freshservice tickets and enrich with Jira data
-// Called by the frontend search UI
+// Frontend calls this — searches Jira by ticket key or text in summary/description
 
 import { NextRequest, NextResponse } from "next/server";
-import { searchTickets, getTicketByDisplayId } from "@/lib/freshservice";
-import { enrichRequest } from "@/lib/enrich";
+import { searchByText, searchByKey } from "@/lib/jira";
+import { enrichIssue } from "@/lib/enrich";
 import type { SearchResponse } from "@/types";
 
 export const maxDuration = 15;
 
 export async function GET(req: NextRequest) {
-  const query = req.nextUrl.searchParams.get("q");
-
-  if (!query || query.trim().length < 2) {
+  const query = req.nextUrl.searchParams.get("q")?.trim();
+  if (!query || query.length < 2) {
     return NextResponse.json({ results: [], total: 0, query: "" });
   }
 
-  const q = query.trim();
-
   try {
-    // If it looks like a specific ticket ID, try direct lookup first
-    const isTicketId = /^(REQ-?|SR-?|INC-?|#)?\d{4,}$/i.test(q);
+    // If it looks like a Jira key (e.g., DPS-100999), try exact lookup first
+    const isKey = /^[A-Z]+-\d+$/i.test(query);
 
-    if (isTicketId) {
-      const ticket = await getTicketByDisplayId(q);
-      if (ticket) {
-        const enriched = await enrichRequest(ticket);
-        const response: SearchResponse = {
-          results: [enriched],
-          total: 1,
-          query: q,
-        };
-        return NextResponse.json(response);
+    if (isKey) {
+      const issue = await searchByKey(query);
+      if (issue) {
+        const enriched = await enrichIssue(issue);
+        return NextResponse.json({ results: [enriched], total: 1, query } as SearchResponse);
       }
     }
 
-    // Keyword search across tickets
-    const tickets = await searchTickets(q);
+    // Text search
+    const issues = await searchByText(query, 10);
 
-    // Enrich top results (limit to avoid timeout)
-    const enrichedResults = await Promise.all(
-      tickets.slice(0, 8).map(async (ticket) => {
+    const results = await Promise.all(
+      issues.slice(0, 8).map(async (issue) => {
         try {
-          return await enrichRequest(ticket);
+          return await enrichIssue(issue);
         } catch (err) {
-          console.warn(`[search] Failed to enrich ticket #${ticket.id}:`, err);
-          // Return a minimal result if enrichment fails
+          console.warn(`[search] Enrich failed for ${issue.key}:`, err);
           return {
-            id: ticket.id,
-            subject: ticket.subject,
-            description: ticket.description_text || "",
-            status: "Open",
-            statusRaw: ticket.status,
-            priority: "Normal",
-            type: ticket.type || "Service Request",
-            createdAt: ticket.created_at,
-            updatedAt: ticket.updated_at,
-            requester: { name: "Unknown", email: "" },
+            jiraKey: issue.key,
+            summary: issue.fields.summary,
+            description: "",
+            status: issue.fields.status?.name || "Unknown",
+            statusCategory: issue.fields.status?.statusCategory?.name || "",
+            priority: issue.fields.priority?.name || "Normal",
+            issueType: issue.fields.issuetype?.name || "Task",
+            project: issue.fields.project?.name || "",
+            createdAt: issue.fields.created,
+            updatedAt: issue.fields.updated,
+            requester: null,
+            assignee: null,
             productManager: null,
-            jira: null,
+            sprint: null,
+            sprintEndDate: null,
+            url: "#",
             tracker: [],
             recentNotes: [],
           };
@@ -66,18 +59,9 @@ export async function GET(req: NextRequest) {
       })
     );
 
-    const response: SearchResponse = {
-      results: enrichedResults,
-      total: tickets.length,
-      query: q,
-    };
-
-    return NextResponse.json(response);
+    return NextResponse.json({ results, total: issues.length, query } as SearchResponse);
   } catch (err: any) {
-    console.error("[search] Error:", err);
-    return NextResponse.json(
-      { error: "Search failed", message: err.message },
-      { status: 500 }
-    );
+    console.error("[search]", err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }

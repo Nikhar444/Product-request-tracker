@@ -1,21 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "app/api/webhooks/**/*.ts": {
-      "maxDuration": 30
-    },
-    "app/api/search/route.ts": {
-      "maxDuration": 15
-    }
-  },
-  "headers": [
-    {
-      "source": "/api/webhooks/(.*)",
-      "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" },
-        { "key": "Access-Control-Allow-Methods", "value": "POST, OPTIONS" },
-        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, x-webhook-secret" }
-      ]
-    }
-  ]
+    "app/api/webhooks/**/*.ts": { "maxDuration": 30 },
+    "app/api/search/route.ts": { "maxDuration": 15 }
+  }
 }

@@ -1,202 +1,131 @@
 // app/api/webhooks/jira/route.ts
-// Receives webhooks from Jira (jira:issue_updated events)
-// Trigger 3: Jira status changes → email requester via Freshservice lookup
+// Jira fires webhooks on issue_updated → we send email to requester + subscribers
 
 import { NextRequest, NextResponse } from "next/server";
 import type { JiraWebhookPayload } from "@/types";
-import { verifyWebhook, parseWebhookBody } from "@/lib/webhook-auth";
-import { getIssue, getFreshserviceIdFromIssue, humanizeSprint } from "@/lib/jira";
-import { getTicket, getRequester } from "@/lib/freshservice";
-import { sendNotification } from "@/lib/email";
-import {
-  getSubscribersForRequest,
-  logNotification,
-  sendToSubscribers,
-} from "@/lib/store";
+import { verifyWebhook } from "@/lib/webhook-auth";
+import { getIssue, getRequester, humanizeSprint } from "@/lib/jira";
+import { sendNotification, sendBulk } from "@/lib/email";
+import { getSubscribers, logNotification } from "@/lib/store";
 
 export const maxDuration = 30;
 
 export async function POST(req: NextRequest) {
-  // ── Verify ──
   const auth = verifyWebhook(req);
-  if (!auth.valid) {
-    return NextResponse.json({ error: auth.error }, { status: 401 });
-  }
+  if (!auth.valid) return NextResponse.json({ error: auth.error }, { status: 401 });
 
-  const body = await parseWebhookBody<JiraWebhookPayload>(req);
-  if (!body) {
-    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+  let body: JiraWebhookPayload;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
   const { issue, changelog } = body;
+  if (!issue?.key) return NextResponse.json({ error: "No issue key" }, { status: 400 });
 
-  if (!issue?.key) {
-    return NextResponse.json({ error: "No issue key in payload" }, { status: 400 });
-  }
-
-  // ── Check what changed ──
   const changes = changelog?.items || [];
+  const statusChange = changes.find((c) => c.field === "status");
+  const sprintChange = changes.find((c) => c.field === "Sprint");
+  const assigneeChange = changes.find((c) => c.field === "assignee");
 
-  const statusChange = changes.find((item) => item.field === "status");
-  const sprintChange = changes.find((item) => item.field === "Sprint");
-
-  // Only process status or sprint changes
-  if (!statusChange && !sprintChange) {
-    return NextResponse.json({
-      ok: true,
-      event: "ignored",
-      message: "No status or sprint change detected",
-    });
+  // Skip if nothing we care about changed
+  if (!statusChange && !sprintChange && !assigneeChange) {
+    return NextResponse.json({ ok: true, event: "ignored" });
   }
 
   try {
-    console.log(
-      `[webhook/jira] Processing ${issue.key}: ${
-        statusChange
-          ? `status ${statusChange.fromString} → ${statusChange.toString}`
-          : `sprint changed`
-      }`
-    );
-
-    // ── Get full Jira issue to find linked Freshservice ticket ──
     const jiraIssue = await getIssue(issue.key);
-    const freshserviceId = getFreshserviceIdFromIssue(jiraIssue);
+    const requester = getRequester(jiraIssue);
 
-    if (!freshserviceId) {
-      console.log(
-        `[webhook/jira] No Freshservice ID found on ${issue.key} — skipping notification`
-      );
-      return NextResponse.json({
-        ok: true,
-        event: "no_fs_link",
-        message: `No Freshservice ticket linked to ${issue.key}`,
-      });
+    if (!requester) {
+      console.log(`[webhook/jira] No requester email on ${issue.key} — skipping`);
+      return NextResponse.json({ ok: true, event: "no_requester" });
     }
 
-    // ── Fetch Freshservice ticket and requester ──
-    const ticketId = parseInt(freshserviceId);
-    const ticket = await getTicket(ticketId);
-    const requester = await getRequester(ticket.requester_id);
+    // Determine event type
+    let eventType: "pm_assigned" | "jira_status_changed" | "jira_sprint_assigned" | "request_closed";
 
-    const fromStatus = statusChange?.fromString || "Unknown";
+    if (assigneeChange && !statusChange && !sprintChange) {
+      eventType = "pm_assigned";
+    } else if (sprintChange && !statusChange) {
+      eventType = "jira_sprint_assigned";
+    } else if (statusChange?.toString === "Done" || statusChange?.toString === "Closed") {
+      eventType = "request_closed";
+    } else {
+      eventType = "jira_status_changed";
+    }
+
+    const fromStatus = statusChange?.fromString || "";
     const toStatus = statusChange?.toString || jiraIssue.fields.status.name;
-    const sprintInfo = humanizeSprint(jiraIssue.fields.sprint);
-    const lastModified = new Date(
-      jiraIssue.fields.updated
-    ).toLocaleString("en-US", {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-      timeZoneName: "short",
+    const sprintInfo = humanizeSprint(jiraIssue.fields.sprint) || "";
+    const lastModified = new Date(jiraIssue.fields.updated).toLocaleString("en-US", {
+      weekday: "long", year: "numeric", month: "long", day: "numeric",
+      hour: "numeric", minute: "2-digit", timeZoneName: "short",
     });
 
-    // ── Determine notification type ──
-    const eventType = sprintChange && !statusChange
-      ? "jira_sprint_assigned"
-      : "jira_status_changed";
+    const details: Record<string, string> = {
+      fromStatus,
+      toStatus,
+      currentStatus: toStatus,
+      sprintInfo,
+      sprintName: jiraIssue.fields.sprint?.name || "",
+      sprintEndDate: jiraIssue.fields.sprint?.endDate
+        ? new Date(jiraIssue.fields.sprint.endDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+        : "",
+      lastModified,
+      assignee: jiraIssue.fields.assignee?.displayName || "Unassigned",
+      pmName: assigneeChange?.toString || jiraIssue.fields.assignee?.displayName || "",
+      pmEmail: jiraIssue.fields.assignee?.emailAddress || "",
+      subscriptionType: "status_milestones",
+    };
 
-    // ── Check if this is a milestone status (for milestone-only subscribers) ──
-    const milestoneStatuses = [
-      "In Progress",
-      "In Scope Review",
-      "In Scope",
-      "Ready for Release",
-      "Done",
-      "Closed",
-      "UAT",
-      "Ready for QA",
-    ];
+    // 1. Send to the original requester
+    const result = await sendNotification({
+      to: requester.email,
+      requesterName: requester.name,
+      jiraKey: issue.key,
+      requestSubject: jiraIssue.fields.summary,
+      eventType,
+      details,
+    });
+
+    await logNotification({ jiraKey: issue.key, email: requester.email, event: eventType, ok: result.success });
+
+    // 2. Send to subscribers (deduped, excluding requester)
+    const milestoneStatuses = ["In Progress", "In Scope Review", "In Scope", "Ready for Release", "Done", "Closed", "UAT", "Ready for QA"];
     const isMilestone = milestoneStatuses.includes(toStatus);
 
-    // ── Send to requester (always) ──
-    const result = await sendNotification({
-      to: requester.primary_email,
-      requesterName: requester.first_name,
-      requestId: ticketId,
-      requestSubject: ticket.subject,
-      eventType,
-      jiraKey: issue.key,
-      details: {
-        fromStatus,
-        toStatus,
-        currentStatus: toStatus,
-        sprintInfo: sprintInfo || "",
-        sprintName: jiraIssue.fields.sprint?.name || "",
-        sprintEndDate: jiraIssue.fields.sprint?.endDate
-          ? new Date(jiraIssue.fields.sprint.endDate).toLocaleDateString(
-              "en-US",
-              { month: "long", day: "numeric", year: "numeric" }
-            )
-          : "",
-        lastModified,
-        assignee: jiraIssue.fields.assignee?.displayName || "Unassigned",
-        subscriptionType: "status_milestones",
-      },
-    });
-
-    await logNotification({
-      requestId: ticketId,
-      email: requester.primary_email,
-      eventType,
-      success: result.success,
-    });
-
-    // ── Send to subscribers ──
-    // Full activity subscribers get everything
-    const fullSubs = await getSubscribersForRequest(ticketId, "full_activity");
-    // Milestone subscribers only get milestone statuses
-    const milestoneSubs = isMilestone
-      ? await getSubscribersForRequest(ticketId, "status_milestones")
-      : [];
-
-    const allSubEmails = [
-      ...fullSubs.map((s) => s.email),
-      ...milestoneSubs.map((s) => s.email),
-    ].filter(
-      (email, idx, arr) =>
-        // Deduplicate and exclude the requester (already sent above)
-        arr.indexOf(email) === idx && email !== requester.primary_email
+    const fullSubs = await getSubscribers(issue.key, "full_activity");
+    const milestoneSubs = isMilestone ? await getSubscribers(issue.key, "status_milestones") : [];
+    const subEmails = [...new Set([...fullSubs, ...milestoneSubs].map((s) => s.email))].filter(
+      (e) => e !== requester.email
     );
 
-    if (allSubEmails.length > 0) {
-      const subResult = await sendToSubscribers(allSubEmails, {
+    let subsNotified = 0;
+    if (subEmails.length > 0) {
+      const r = await sendBulk(subEmails, {
         requesterName: "Subscriber",
-        requestId: ticketId,
-        requestSubject: ticket.subject,
-        eventType,
         jiraKey: issue.key,
-        details: {
-          fromStatus,
-          toStatus,
-          currentStatus: toStatus,
-          sprintInfo: sprintInfo || "",
-          lastModified,
-          subscriptionType: "status_milestones",
-        },
+        requestSubject: jiraIssue.fields.summary,
+        eventType,
+        details,
       });
-
-      console.log(
-        `[webhook/jira] Notified ${subResult.sent} subscribers (${subResult.failed} failed)`
-      );
+      subsNotified = r.sent;
     }
+
+    console.log(`[webhook/jira] ${issue.key}: ${eventType} → emailed ${requester.email} + ${subsNotified} subs`);
 
     return NextResponse.json({
       ok: true,
       event: eventType,
       jiraKey: issue.key,
-      freshserviceId: ticketId,
       from: fromStatus,
       to: toStatus,
-      subscribersNotified: allSubEmails.length,
+      subscribersNotified: subsNotified,
     });
   } catch (err: any) {
-    console.error(`[webhook/jira] Error processing ${issue.key}:`, err);
-    return NextResponse.json(
-      { error: "Internal error", message: err.message },
-      { status: 500 }
-    );
+    console.error(`[webhook/jira] ${issue.key}:`, err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }

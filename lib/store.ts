@@ -1,61 +1,37 @@
 // lib/store.ts
-// Subscription and notification log persistence
-// Uses Vercel KV when available, falls back to in-memory store
+// Subscription persistence — Vercel KV when available, in-memory fallback
 
 import type { Subscription, SubscriptionType } from "@/types";
-
-// ─── Check if Vercel KV is available ──────────────────────
 
 let kv: any = null;
 
 async function getKV() {
   if (kv) return kv;
-
   if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
     try {
-      const { kv: vercelKV } = await import("@vercel/kv");
-      kv = vercelKV;
-      console.log("[store] Using Vercel KV for persistence");
+      const mod = await import("@vercel/kv");
+      kv = mod.kv;
       return kv;
-    } catch {
-      console.warn("[store] Vercel KV import failed — using in-memory store");
-    }
+    } catch {}
   }
-
   return null;
 }
 
-// ─── In-Memory Fallback ───────────────────────────────────
-// WARNING: Resets on every deployment/cold start.
-// Fine for development; use Vercel KV or a database for production.
-
-const memoryStore = {
-  subscriptions: new Map<string, Subscription>(),
-  notificationLog: [] as Array<{
-    requestId: number;
-    email: string;
-    eventType: string;
-    sentAt: string;
-    success: boolean;
-  }>,
+const mem = {
+  subs: new Map<string, Subscription>(),
+  logs: [] as Array<{ jiraKey: string; email: string; event: string; at: string; ok: boolean }>,
 };
 
-// ─── Subscription CRUD ────────────────────────────────────
-
-function subscriptionKey(requestId: number, email: string): string {
-  return `sub:${requestId}:${email.toLowerCase()}`;
+function subKey(jiraKey: string, email: string) {
+  return `sub:${jiraKey}:${email.toLowerCase()}`;
 }
 
-export async function createSubscription(
-  email: string,
-  requestId: number,
-  type: SubscriptionType,
-  jiraKey?: string
+export async function subscribe(
+  email: string, jiraKey: string, type: SubscriptionType
 ): Promise<Subscription> {
   const sub: Subscription = {
-    id: subscriptionKey(requestId, email),
+    id: subKey(jiraKey, email),
     email: email.toLowerCase(),
-    requestId,
     jiraKey,
     type,
     createdAt: new Date().toISOString(),
@@ -65,122 +41,64 @@ export async function createSubscription(
   const store = await getKV();
   if (store) {
     await store.set(sub.id, JSON.stringify(sub));
-    // Also maintain an index of subscriptions per request
-    const indexKey = `sub-index:${requestId}`;
-    const existing: string[] = (await store.get(indexKey)) || [];
-    if (!existing.includes(sub.id)) {
-      existing.push(sub.id);
-      await store.set(indexKey, existing);
-    }
+    const idx: string[] = (await store.get(`idx:${jiraKey}`)) || [];
+    if (!idx.includes(sub.id)) { idx.push(sub.id); await store.set(`idx:${jiraKey}`, idx); }
   } else {
-    memoryStore.subscriptions.set(sub.id, sub);
+    mem.subs.set(sub.id, sub);
   }
-
   return sub;
 }
 
-export async function getSubscription(
-  requestId: number,
-  email: string
-): Promise<Subscription | null> {
-  const key = subscriptionKey(requestId, email);
-
-  const store = await getKV();
-  if (store) {
-    const data = await store.get(key);
-    return data ? (typeof data === "string" ? JSON.parse(data) : data) : null;
-  }
-
-  return memoryStore.subscriptions.get(key) || null;
-}
-
-export async function getSubscribersForRequest(
-  requestId: number,
-  filterType?: SubscriptionType
+export async function getSubscribers(
+  jiraKey: string, filterType?: SubscriptionType
 ): Promise<Subscription[]> {
   const store = await getKV();
-
   if (store) {
-    const indexKey = `sub-index:${requestId}`;
-    const subIds: string[] = (await store.get(indexKey)) || [];
+    const ids: string[] = (await store.get(`idx:${jiraKey}`)) || [];
     const subs: Subscription[] = [];
-
-    for (const id of subIds) {
-      const data = await store.get(id);
-      if (data) {
-        const sub: Subscription =
-          typeof data === "string" ? JSON.parse(data) : data;
-        if (sub.active) {
-          if (!filterType || sub.type === filterType) {
-            subs.push(sub);
-          }
-        }
+    for (const id of ids) {
+      const raw = await store.get(id);
+      if (raw) {
+        const s: Subscription = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (s.active && (!filterType || s.type === filterType)) subs.push(s);
       }
     }
-
     return subs;
   }
-
-  // Memory fallback
-  const subs: Subscription[] = [];
-  for (const sub of memoryStore.subscriptions.values()) {
-    if (sub.requestId === requestId && sub.active) {
-      if (!filterType || sub.type === filterType) {
-        subs.push(sub);
-      }
-    }
-  }
-  return subs;
+  return Array.from(mem.subs.values()).filter(
+    (s) => s.jiraKey === jiraKey && s.active && (!filterType || s.type === filterType)
+  );
 }
 
-export async function unsubscribe(
-  requestId: number,
-  email: string
-): Promise<boolean> {
-  const key = subscriptionKey(requestId, email);
-
+export async function unsubscribe(jiraKey: string, email: string): Promise<boolean> {
+  const key = subKey(jiraKey, email);
   const store = await getKV();
   if (store) {
-    const data = await store.get(key);
-    if (data) {
-      const sub: Subscription =
-        typeof data === "string" ? JSON.parse(data) : data;
-      sub.active = false;
-      await store.set(key, JSON.stringify(sub));
+    const raw = await store.get(key);
+    if (raw) {
+      const s: Subscription = typeof raw === "string" ? JSON.parse(raw) : raw;
+      s.active = false;
+      await store.set(key, JSON.stringify(s));
       return true;
     }
     return false;
   }
-
-  const sub = memoryStore.subscriptions.get(key);
-  if (sub) {
-    sub.active = false;
-    return true;
-  }
+  const s = mem.subs.get(key);
+  if (s) { s.active = false; return true; }
   return false;
 }
 
-// ─── Notification Logging ─────────────────────────────────
-
 export async function logNotification(entry: {
-  requestId: number;
-  email: string;
-  eventType: string;
-  success: boolean;
-}): Promise<void> {
-  const log = { ...entry, sentAt: new Date().toISOString() };
-
+  jiraKey: string; email: string; event: string; ok: boolean;
+}) {
+  const log = { ...entry, at: new Date().toISOString() };
   const store = await getKV();
   if (store) {
-    const logKey = `log:${entry.requestId}:${Date.now()}`;
-    await store.set(logKey, JSON.stringify(log));
-    // TTL: keep logs for 90 days
-    await store.expire(logKey, 60 * 60 * 24 * 90);
+    const k = `log:${entry.jiraKey}:${Date.now()}`;
+    await store.set(k, JSON.stringify(log));
+    await store.expire(k, 60 * 60 * 24 * 90);
   } else {
-    memoryStore.notificationLog.push(log);
-    // Keep memory log from growing unbounded
-    if (memoryStore.notificationLog.length > 1000) {
-      memoryStore.notificationLog.splice(0, 500);
-    }
+    mem.logs.push(log);
+    if (mem.logs.length > 1000) mem.logs.splice(0, 500);
   }
 }

@@ -1,46 +1,4 @@
 // types/index.ts
-// Central type definitions for the entire application
-
-// ─── Freshservice Types ───────────────────────────────────
-
-export interface FreshserviceTicket {
-  id: number;
-  subject: string;
-  description: string;
-  description_text: string;
-  status: number;
-  priority: number;
-  requester_id: number;
-  responder_id: number | null;
-  group_id: number | null;
-  type: string;
-  source: number;
-  custom_fields: Record<string, any>;
-  tags: string[];
-  created_at: string;
-  updated_at: string;
-  due_by: string | null;
-  fr_due_by: string | null;
-}
-
-export interface FreshserviceRequester {
-  id: number;
-  first_name: string;
-  last_name: string;
-  primary_email: string;
-  job_title: string | null;
-  department_ids: number[];
-  phone: string | null;
-}
-
-export interface FreshserviceAgent {
-  id: number;
-  first_name: string;
-  last_name: string;
-  email: string;
-  job_title: string | null;
-  department_ids: number[];
-}
 
 // ─── Jira Types ───────────────────────────────────────────
 
@@ -50,15 +8,11 @@ export interface JiraIssue {
   self: string;
   fields: {
     summary: string;
-    description: any; // ADF format
+    description: any;
     status: {
       name: string;
       id: string;
-      statusCategory: {
-        key: string;
-        name: string;
-        colorName: string;
-      };
+      statusCategory: { key: string; name: string; colorName: string };
     };
     assignee: {
       displayName: string;
@@ -69,30 +23,18 @@ export interface JiraIssue {
       displayName: string;
       emailAddress: string;
     } | null;
-    priority: {
-      name: string;
-      id: string;
-    };
-    issuetype: {
-      name: string;
-      id: string;
-    };
-    project: {
-      key: string;
-      name: string;
-    };
+    priority: { name: string; id: string };
+    issuetype: { name: string; id: string };
+    project: { key: string; name: string };
+    labels: string[];
     sprint?: {
       id: number;
       name: string;
       state: string;
       startDate?: string;
       endDate?: string;
-      completeDate?: string;
     } | null;
-    comment?: {
-      comments: JiraComment[];
-      total: number;
-    };
+    comment?: { comments: JiraComment[]; total: number };
     updated: string;
     created: string;
     resolutiondate: string | null;
@@ -107,7 +49,7 @@ export interface JiraComment {
     emailAddress: string;
     avatarUrls: Record<string, string>;
   };
-  body: any; // ADF format
+  body: any;
   created: string;
   updated: string;
 }
@@ -116,19 +58,9 @@ export interface JiraWebhookPayload {
   timestamp: number;
   webhookEvent: string;
   issue_event_type_name?: string;
-  user: {
-    displayName: string;
-    emailAddress: string;
-  };
-  issue: {
-    id: string;
-    key: string;
-    fields: Record<string, any>;
-  };
-  changelog?: {
-    id: string;
-    items: JiraChangelogItem[];
-  };
+  user: { displayName: string; emailAddress: string };
+  issue: { id: string; key: string; fields: Record<string, any> };
+  changelog?: { id: string; items: JiraChangelogItem[] };
 }
 
 export interface JiraChangelogItem {
@@ -141,25 +73,7 @@ export interface JiraChangelogItem {
   toString: string | null;
 }
 
-// ─── Freshservice Webhook Types ───────────────────────────
-
-export interface FreshserviceWebhookPayload {
-  freshdesk_webhook?: {
-    ticket_id: number;
-    ticket_subject?: string;
-    ticket_status?: string;
-    ticket_priority?: string;
-    ticket_type?: string;
-    triggered_by?: string;
-    [key: string]: any;
-  };
-  ticket_id?: number;
-  event_type?: "pm_assigned" | "jira_linked" | "status_changed";
-  changes?: Record<string, { from: any; to: any }>;
-  [key: string]: any;
-}
-
-// ─── Application Types ────────────────────────────────────
+// ─── App Types ────────────────────────────────────────────
 
 export type PizzaTrackerStage =
   | "submitted"
@@ -167,75 +81,57 @@ export type PizzaTrackerStage =
   | "scope_confirmed"
   | "development"
   | "uat"
-  | "released"
-  | "closed";
+  | "released";
 
 export interface TrackerStep {
   id: PizzaTrackerStage;
   label: string;
   subtitle?: string;
   date?: string;
-  dateRange?: { start: string; end: string };
   status: "complete" | "current" | "upcoming";
 }
 
 export interface EnrichedRequest {
-  // Freshservice data
-  id: number;
-  subject: string;
+  jiraKey: string;
+  summary: string;
   description: string;
   status: string;
-  statusRaw: number;
+  statusCategory: string;
   priority: string;
-  type: string;
+  issueType: string;
+  project: string;
   createdAt: string;
   updatedAt: string;
 
-  // Requester
-  requester: {
-    name: string;
-    email: string;
-    jobTitle?: string;
-  };
+  // Requester (from custom field or reporter)
+  requester: { name: string; email: string } | null;
 
-  // Product Manager (from Freshservice agent/responder)
-  productManager: {
-    name: string;
-    email: string;
-    initials: string;
-  } | null;
+  // Client/business metadata (from custom field or label)
+  client?: string;
 
-  // Jira data (null if no Jira ticket linked)
-  jira: {
-    key: string;
-    summary: string;
-    status: string;
-    statusCategory: string;
-    assignee: string | null;
-    sprint: string | null;
-    sprintEndDate: string | null;
-    url: string;
-  } | null;
+  // Assignee
+  assignee: string | null;
+
+  // PM (mapped from Jira — could be assignee or a custom field)
+  productManager: { name: string; initials: string } | null;
+
+  // Sprint
+  sprint: string | null;
+  sprintEndDate: string | null;
+
+  // Jira URL
+  url: string;
 
   // Computed pizza tracker
   tracker: TrackerStep[];
 
-  // Client/project metadata (parsed from ticket subject or custom fields)
-  client?: string;
-  country?: string;
-  category?: string;
-
-  // Recent notes from Jira
+  // Recent comments
   recentNotes: NoteEntry[];
 }
 
 export interface NoteEntry {
   id: string;
-  author: {
-    name: string;
-    initials: string;
-    avatarUrl?: string;
-  };
+  author: { name: string; initials: string; avatarUrl?: string };
   body: string;
   createdAt: string;
 }
@@ -247,8 +143,7 @@ export type SubscriptionType = "full_activity" | "status_milestones";
 export interface Subscription {
   id: string;
   email: string;
-  requestId: number;
-  jiraKey?: string;
+  jiraKey: string;
   type: SubscriptionType;
   createdAt: string;
   active: boolean;
@@ -258,7 +153,6 @@ export interface Subscription {
 
 export type NotificationEventType =
   | "pm_assigned"
-  | "jira_linked"
   | "jira_status_changed"
   | "jira_sprint_assigned"
   | "request_closed";
@@ -266,29 +160,16 @@ export type NotificationEventType =
 export interface EmailNotification {
   to: string;
   requesterName: string;
-  requestId: number;
+  jiraKey: string;
   requestSubject: string;
   eventType: NotificationEventType;
-  jiraKey?: string;
   details: Record<string, string>;
 }
 
-// ─── API Response Types ───────────────────────────────────
+// ─── API Responses ────────────────────────────────────────
 
 export interface SearchResponse {
   results: EnrichedRequest[];
   total: number;
   query: string;
-}
-
-export interface WebhookResponse {
-  ok: boolean;
-  event: string;
-  message?: string;
-}
-
-export interface ApiError {
-  error: string;
-  message: string;
-  status: number;
 }

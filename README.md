@@ -1,55 +1,81 @@
 # Product Request Tracker
 
-A Vercel-hosted platform connecting **Freshservice**, **Jira**, and **Outlook** to give stakeholders real-time, plain-English updates on their product intake requests.
+A Vercel-hosted portal where stakeholders can track product intake requests by searching Jira tickets in plain English. Sends automated Outlook email notifications when statuses change.
 
-## What it does
-
-**For stakeholders**: A search portal where they type "reporting dashboard" or "REQ-11918885" and see a pizza-tracker-style progress view — no Freshservice login needed.
-
-**For the product team**: Automated Outlook emails sent to requesters whenever:
-1. A product manager is assigned to their Freshservice request
-2. A Jira ticket gets linked to the request
-3. The Jira ticket status changes (e.g. selected for sprint, in progress, done)
-
-## Architecture
+## Architecture (Jira-only)
 
 ```
-┌─────────────────┐     webhook      ┌──────────────────┐     SMTP      ┌───────────┐
-│  Freshservice    │───────────────►  │  Vercel App      │──────────────►│  Outlook   │
-│  (Service Reqs)  │                  │                  │               │  (M365)    │
-└─────────────────┘                  │  /api/webhooks/  │               └───────────┘
-                                      │  freshservice    │                     │
-┌─────────────────┐     webhook      │  /api/webhooks/  │                     ▼
-│  Jira            │───────────────►  │  jira            │              Stakeholder
-│  (Dev Tickets)   │                  │                  │              Inbox
-└─────────────────┘                  │  /api/search     │
-                                      │  /intake-status  │◄─── Stakeholder Browser
-                                      └──────────────────┘
+Stakeholder → Search UI → /api/search → Jira REST API (JQL text search)
+                                              ↓
+                                    Enriched result + pizza tracker
+
+Jira webhook (status change) → /api/webhooks/jira → Lookup requester → Send Outlook email
 ```
+
+**No Freshservice required.** Jira is the single source of truth. The requester's email comes from either a custom field on the Jira ticket or the reporter field.
+
+## Features
+
+- **Search by text**: Stakeholders type keywords like "network mismatch" or a Jira key like "DPS-100999"
+- **Pizza tracker**: Visual 6-step progress bar (Submitted → Review → Scope → Dev → UAT → Released)
+- **Email notifications**: Auto-sent on status changes, sprint assignments, and PM assignments
+- **Email subscriptions**: Stakeholders subscribe to "full activity" or "milestones only" updates
+- **Recent notes**: Shows latest Jira comments in plain text
+- **Not-found escalation**: If a search fails, stakeholders can ask the product team to look into it
 
 ## Quick Start
 
-### 1. Clone and install
-
 ```bash
-git clone <your-repo-url>
-cd product-request-tracker
+# 1. Clone
+git clone <repo> && cd product-request-tracker
+
+# 2. Install
 npm install
-```
 
-### 2. Configure environment
-
-```bash
+# 3. Configure
 cp .env.example .env.local
-# Fill in all values — see .env.example for detailed comments
-```
+# Edit .env.local with your Jira + SMTP credentials
 
-### 3. Run locally
-
-```bash
+# 4. Run
 npm run dev
 # Open http://localhost:3000/intake-status
 ```
+
+## Setup Guide
+
+### 1. Jira Configuration
+
+**API Token:**
+- Go to https://id.atlassian.com/manage-profile/security/api-tokens
+- Create a token for a service account (not your personal account)
+
+**Custom Fields (recommended):**
+Create these custom fields in Jira so the app knows who to email:
+- "Requester Email" (text field) → note the `customfield_XXXXX` ID
+- "Requester Name" (text field) → optional
+- "Client" (text field or select) → optional
+
+Set these IDs in your env vars.
+
+**Alternative:** If you don't create custom fields, the app falls back to the Jira reporter's email.
+
+### 2. Jira Webhook
+
+Go to **Jira Settings → System → Webhooks**:
+- URL: `https://your-app.vercel.app/api/webhooks/jira?secret=YOUR_WEBHOOK_SECRET`
+- Events: `jira:issue_updated`
+- Filter (JQL): `project = DPS` (scope to your project)
+
+### 3. Email (SMTP)
+
+**Microsoft 365:**
+- Host: `smtp.office365.com`, Port: `587`
+- Use a shared mailbox (e.g., `noreply-product@company.com`)
+- Create an App Password or configure OAuth2
+
+**Gmail (for testing):**
+- Host: `smtp.gmail.com`, Port: `587`
+- Enable 2FA → create an App Password
 
 ### 4. Deploy to Vercel
 
@@ -57,123 +83,71 @@ npm run dev
 npx vercel --prod
 ```
 
-Add all env vars in Vercel Dashboard → Settings → Environment Variables.
+Add all env vars in **Vercel Dashboard → Settings → Environment Variables**.
 
-## Setup Guide
-
-### Freshservice Custom Field
-
-You need a custom field on Freshservice tickets to store the Jira key:
-
-1. Go to **Admin → Form Fields → Ticket Fields**
-2. Add a **Single-line text** field named "Jira Ticket"
-3. Note the API name (e.g., `cf_jira_ticket`)
-4. Set `FRESHSERVICE_JIRA_FIELD=cf_jira_ticket` in your env
-
-### Jira Custom Field
-
-A field on Jira issues to store the Freshservice ticket number:
-
-1. Go to **Jira Settings → Issues → Custom Fields → Create**
-2. Add a **Text Field (single line)** named "Freshservice ID"
-3. Note the field ID (e.g., `customfield_10050`)
-4. Set `JIRA_FRESHSERVICE_FIELD=customfield_10050` in your env
-
-### Freshservice Webhooks
-
-Go to **Admin → Automations → Workflow Automator** (or Observer Rules):
-
-**Webhook 1: PM Assigned**
-- Trigger: When "Agent" field changes on a Service Request
-- Action: Trigger Webhook (POST)
-- URL: `https://your-app.vercel.app/api/webhooks/freshservice?secret=YOUR_WEBHOOK_SECRET`
-- Content type: JSON
-- Body: Include `ticket_id` and set `event_type` to `pm_assigned`
-
-**Webhook 2: Jira Ticket Linked**
-- Trigger: When custom field "Jira Ticket" is updated
-- Action: Trigger Webhook (POST)
-- URL: `https://your-app.vercel.app/api/webhooks/freshservice?secret=YOUR_WEBHOOK_SECRET`
-- Content type: JSON
-- Body: Include `ticket_id` and set `event_type` to `jira_linked`
-
-### Jira Webhook
-
-Go to **Jira Settings → System → Webhooks → Create**:
-
-- URL: `https://your-app.vercel.app/api/webhooks/jira?secret=YOUR_WEBHOOK_SECRET`
-- Events: Check **Issue → updated**
-- Optional JQL filter: `project = YOUR_PROJECT` (limits to your project)
-
-### Email (M365 SMTP)
-
-For Microsoft 365 Outlook:
-- Create a shared mailbox (e.g., `noreply-product@yourcompany.com`)
-- Generate an App Password (or configure OAuth2 for production)
-- Set `SMTP_HOST=smtp.office365.com`, `SMTP_PORT=587`
-
-For Gmail (quick testing):
-- Enable 2FA and create an App Password
-- Set `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`
+Optional: Link a **Vercel KV** store for persistent subscriptions.
 
 ## Project Structure
 
 ```
-├── app/
-│   ├── layout.tsx                     # Root layout
-│   ├── page.tsx                       # Redirects to /intake-status
-│   ├── intake-status/
-│   │   ├── page.tsx                   # Server component shell
-│   │   └── client.tsx                 # Full client-side UI
-│   └── api/
-│       ├── webhooks/
-│       │   ├── freshservice/route.ts  # Freshservice webhook handler
-│       │   └── jira/route.ts          # Jira webhook handler
-│       ├── search/route.ts            # Search API
-│       ├── subscribe/route.ts         # Email subscription
-│       ├── ask-product/route.ts       # Not-found escalation
-│       └── unsubscribe/route.ts       # Email unsubscribe
-├── lib/
-│   ├── freshservice.ts                # Freshservice API client
-│   ├── jira.ts                        # Jira API client
-│   ├── email.ts                       # SMTP email sender + templates
-│   ├── enrich.ts                      # Combines FS + Jira into EnrichedRequest
-│   ├── store.ts                       # Subscriptions (Vercel KV / in-memory)
-│   └── webhook-auth.ts               # Webhook verification
-├── config/
-│   └── constants.ts                   # Status mappings, stage definitions
-├── types/
-│   └── index.ts                       # All TypeScript interfaces
-├── scripts/
-│   └── test-webhooks.ts              # Webhook testing script
-├── .env.example                       # Environment template
-└── vercel.json                        # Vercel config
+app/
+  intake-status/
+    page.tsx              ← Server component (header + hero)
+    search-client.tsx     ← Client component (search, results, detail view)
+  api/
+    search/route.ts       ← GET /api/search?q=... → Jira JQL search
+    webhooks/jira/route.ts← POST webhook → parse status change → send email
+    subscribe/route.ts    ← POST subscription
+    unsubscribe/route.ts  ← GET unsubscribe link
+    ask-product/route.ts  ← POST "can't find my request" form
+lib/
+  jira.ts                 ← Jira REST API client (search, get issue, get comments)
+  enrich.ts               ← Transforms Jira issue → EnrichedRequest + pizza tracker
+  email.ts                ← nodemailer SMTP sender + HTML template
+  store.ts                ← Vercel KV / in-memory subscription store
+  webhook-auth.ts         ← Webhook secret verification
+config/
+  constants.ts            ← Status mappings, tracker stages, email templates
+types/
+  index.ts                ← All TypeScript interfaces
+scripts/
+  test-webhook.ts         ← Simulate a Jira webhook locally
+  test-email.ts           ← Send a test email to verify SMTP
 ```
 
 ## Customization
 
 ### Status Mappings
 
-Edit `config/constants.ts` to map your Jira workflow statuses:
+Edit `config/constants.ts` to match your Jira workflow:
 
-- `JIRA_STATUS_HUMAN` — Plain English descriptions for stakeholders
-- `JIRA_STATUS_TO_STAGE` — Maps Jira statuses to pizza tracker stages
-- `STATUS_EXPLANATIONS` — What each status means (shown in emails)
+```typescript
+// Map YOUR Jira status names → pizza tracker stages
+export const JIRA_STATUS_TO_STAGE = {
+  "Your Custom Status": "development",  // ← maps to the "development" step
+  ...
+};
 
-### Pizza Tracker Stages
+// Map YOUR Jira status names → plain English
+export const JIRA_STATUS_HUMAN = {
+  "Your Custom Status": "A developer is working on this right now",
+  ...
+};
+```
 
-Edit `TRACKER_STAGES` in `config/constants.ts` to change the visual stages.
+### Tracker Steps
 
-### Email Templates
+Edit the `TRACKER_STAGES` array in `config/constants.ts` to add/remove/rename steps.
 
-Edit `lib/email.ts` → `buildEmailHtml()` to customize the notification format.
+### Email Template
+
+Edit the `buildHtml()` function in `lib/email.ts` to change the email design.
 
 ## Production Checklist
 
-- [ ] Replace in-memory store with Vercel KV or database (link a KV store in Vercel dashboard)
-- [ ] Add OKTA/SSO authentication (NextAuth.js + OKTA provider)
-- [ ] Set up error monitoring (Sentry)
-- [ ] Configure rate limiting on search endpoint
-- [ ] Switch from SMTP App Password to OAuth2 for M365
-- [ ] Add Freshservice requester field to Jira tickets for filtering
-- [ ] Test webhook delivery with `npm run test:webhooks`
+- [ ] Replace in-memory store with Vercel KV or a database
+- [ ] Add OKTA/SSO authentication (NextAuth.js)
+- [ ] Set up monitoring (Sentry, Vercel Logs)
+- [ ] Add rate limiting to search endpoint
+- [ ] Configure M365 OAuth2 instead of SMTP App Password
+- [ ] Set up Jira webhook with proper project filter

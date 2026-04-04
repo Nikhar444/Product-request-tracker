@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
-    "test:webhooks": "tsx scripts/test-webhooks.ts",
+    "test:webhook": "tsx scripts/test-webhook.ts",
     "test:email": "tsx scripts/test-email.ts"
   },
   "dependencies": {
