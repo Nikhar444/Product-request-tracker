@@ -66,10 +66,10 @@ export async function sendBulk(
 // ─── HTML Template ────────────────────────────────────────
 
 function buildHtml(p: EmailNotification): string {
-  const { jiraKey, requestSubject, eventType, details } = p;
+  const { jiraKey, requestId, requestSubject, eventType, details } = p;
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || "";
-  const portalUrl = `${appUrl}/intake-status?req=${jiraKey}`;
-  const unsubUrl = `${appUrl}/api/unsubscribe?key=${jiraKey}&email=${encodeURIComponent(p.to)}`;
+  const portalUrl = `${appUrl}/intake-status?req=${jiraKey || requestId}`;
+  const unsubUrl = `${appUrl}/api/unsubscribe?key=${jiraKey || requestId}&email=${encodeURIComponent(p.to)}`;
   const now = new Date().toLocaleString("en-US", {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
     hour: "numeric", minute: "2-digit", timeZoneName: "short",
@@ -79,6 +79,18 @@ function buildHtml(p: EmailNotification): string {
   const statusColor = eventType === "request_closed" ? "#1D9E75" : eventType === "jira_status_changed" ? "#D97706" : "#5B2D8E";
   const explanation = details.toStatus ? STATUS_EXPLANATIONS[details.toStatus] || "" : "";
 
+  // Build reference: show both REQ number and Jira key if available
+  let reference = "";
+  if (requestId && jiraKey) {
+    reference = `#REQ-${requestId} · ${jiraKey}`;
+  } else if (jiraKey) {
+    reference = jiraKey;
+  } else if (requestId) {
+    reference = `#REQ-${requestId}`;
+  } else {
+    reference = "Request";
+  }
+
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f3;">
 <div style="max-width:600px;margin:0 auto;background:#fff;">
@@ -87,7 +99,7 @@ function buildHtml(p: EmailNotification): string {
   </div>
   <div style="padding:32px;">
     <p style="margin:0 0 4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:#9CA3AF;">Reference</p>
-    <p style="margin:0 0 20px;font-size:20px;font-weight:700;color:#5B2D8E;">${jiraKey}</p>
+    <p style="margin:0 0 20px;font-size:20px;font-weight:700;color:#5B2D8E;">${reference}</p>
     <h1 style="margin:0 0 16px;font-size:16px;font-weight:600;line-height:1.4;color:#1a1a18;">${requestSubject}</h1>
     <div style="margin-bottom:24px;">
       <span style="display:inline-block;padding:4px 14px;border-radius:12px;font-size:13px;font-weight:500;background:rgba(${statusColor === "#1D9E75" ? "29,158,117" : statusColor === "#D97706" ? "217,119,6" : "91,45,142"},0.12);color:${statusColor};">
@@ -118,6 +130,10 @@ function getWhatChanged(type: NotificationEventType, d: Record<string, string>):
   switch (type) {
     case "pm_assigned":
       return `Product manager <strong>${d.pmName}</strong> has been assigned.${d.pmEmail ? ` Reach them at <a href="mailto:${d.pmEmail}" style="color:#5B2D8E">${d.pmEmail}</a>.` : ""}`;
+    case "jira_linked":
+      return `Your request is now tracked in development as <strong>${d.jiraKey}</strong>.${d.jiraSummary ? ` ${d.jiraSummary}` : ""}${d.jiraStatus ? ` Current status: ${d.jiraStatus}.` : ""}`;
+    case "version_assigned":
+      return `Your request has been scheduled for release <strong>${d.versionName}</strong>.`;
     case "jira_status_changed":
       return `Status changed from "${d.fromStatus}" to "<strong>${d.toStatus}</strong>".${d.sprintInfo ? ` ${d.sprintInfo}` : ""}`;
     case "jira_sprint_assigned":

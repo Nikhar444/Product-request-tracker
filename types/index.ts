@@ -155,6 +155,8 @@ export interface Subscription {
 
 export type NotificationEventType =
   | "pm_assigned"
+  | "jira_linked"
+  | "version_assigned"
   | "jira_status_changed"
   | "jira_sprint_assigned"
   | "request_closed";
@@ -162,7 +164,8 @@ export type NotificationEventType =
 export interface EmailNotification {
   to: string;
   requesterName: string;
-  jiraKey: string;
+  jiraKey?: string;
+  requestId?: number;
   requestSubject: string;
   eventType: NotificationEventType;
   details: Record<string, string>;

@@ -1,5 +1,6 @@
 // app/api/webhooks/jira/route.ts
 // Jira fires webhooks on issue_updated → we send email to requester + subscribers
+// Also searches Freshservice for linked tickets to notify the original stakeholder
 
 import { NextRequest, NextResponse } from "next/server";
 import type { JiraWebhookPayload } from "@/types";
@@ -7,6 +8,7 @@ import { verifyWebhook } from "@/lib/webhook-auth";
 import { getIssue, getRequester, humanizeSprint } from "@/lib/jira";
 import { sendNotification, sendBulk } from "@/lib/email";
 import { getSubscribers, logNotification } from "@/lib/store";
+import { searchTickets, getJiraKeyFromTicket, getRequesterEmail } from "@/lib/freshservice";
 
 export const maxDuration = 30;
 
@@ -28,25 +30,60 @@ export async function POST(req: NextRequest) {
   const statusChange = changes.find((c) => c.field === "status");
   const sprintChange = changes.find((c) => c.field === "Sprint");
   const assigneeChange = changes.find((c) => c.field === "assignee");
+  const fixVersionChange = changes.find((c) => c.field === "Fix Version");
 
   // Skip if nothing we care about changed
-  if (!statusChange && !sprintChange && !assigneeChange) {
+  if (!statusChange && !sprintChange && !assigneeChange && !fixVersionChange) {
     return NextResponse.json({ ok: true, event: "ignored" });
   }
 
   try {
     const jiraIssue = await getIssue(issue.key);
-    const requester = getRequester(jiraIssue);
+
+    // Try to get requester from Jira first, then fallback to Freshservice
+    let requester = getRequester(jiraIssue);
+    let freshserviceRequesterEmail: string | null = null;
+
+    // If no requester in Jira, search Freshservice for a linked ticket
+    if (!requester) {
+      console.log(`[webhook/jira] No requester in Jira for ${issue.key}, checking Freshservice...`);
+
+      try {
+        // Search Freshservice tickets where the Jira ID field matches this key
+        const fsTickets = await searchTickets(issue.key);
+
+        for (const ticket of fsTickets) {
+          const linkedJiraKey = getJiraKeyFromTicket(ticket);
+          if (linkedJiraKey === issue.key) {
+            // Found a matching Freshservice ticket!
+            freshserviceRequesterEmail = await getRequesterEmail(ticket);
+            if (freshserviceRequesterEmail) {
+              console.log(`[webhook/jira] Found Freshservice requester: ${freshserviceRequesterEmail}`);
+              requester = {
+                name: "Requester",
+                email: freshserviceRequesterEmail,
+              };
+              break;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[webhook/jira] Could not search Freshservice for ${issue.key}:`, err);
+      }
+    }
 
     if (!requester) {
-      console.log(`[webhook/jira] No requester email on ${issue.key} — skipping`);
+      console.log(`[webhook/jira] No requester email found for ${issue.key} — skipping`);
       return NextResponse.json({ ok: true, event: "no_requester" });
     }
 
     // Determine event type
-    let eventType: "pm_assigned" | "jira_status_changed" | "jira_sprint_assigned" | "request_closed";
+    let eventType: "pm_assigned" | "jira_status_changed" | "jira_sprint_assigned" | "request_closed" | "version_assigned";
 
-    if (assigneeChange && !statusChange && !sprintChange) {
+    if (fixVersionChange && !statusChange) {
+      // Fix version was added or changed
+      eventType = "version_assigned";
+    } else if (assigneeChange && !statusChange && !sprintChange) {
       eventType = "pm_assigned";
     } else if (sprintChange && !statusChange) {
       eventType = "jira_sprint_assigned";
@@ -64,6 +101,11 @@ export async function POST(req: NextRequest) {
       hour: "numeric", minute: "2-digit", timeZoneName: "short",
     });
 
+    // Get fix version information
+    const fixVersionName = jiraIssue.fields.fixVersions && jiraIssue.fields.fixVersions.length > 0
+      ? jiraIssue.fields.fixVersions[0].name
+      : "";
+
     const details: Record<string, string> = {
       fromStatus,
       toStatus,
@@ -77,6 +119,7 @@ export async function POST(req: NextRequest) {
       assignee: jiraIssue.fields.assignee?.displayName || "Unassigned",
       pmName: assigneeChange?.toString || jiraIssue.fields.assignee?.displayName || "",
       pmEmail: jiraIssue.fields.assignee?.emailAddress || "",
+      versionName: fixVersionName,
       subscriptionType: "status_milestones",
     };
 

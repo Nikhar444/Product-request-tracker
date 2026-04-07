@@ -213,6 +213,79 @@ export async function updateTicketCustomField(
   });
 }
 
+// ─── Get Requester Email from Ticket ─────────────────────
+
+export async function getRequesterEmail(ticket: FreshserviceTicket): Promise<string | null> {
+  try {
+    if (!ticket.requester_id) {
+      console.warn("[freshservice] No requester_id on ticket", ticket.id);
+      return null;
+    }
+    const requester = await getRequester(ticket.requester_id);
+    return requester.primary_email || null;
+  } catch (err) {
+    console.error(`[freshservice] Failed to get requester email for ticket ${ticket.id}:`, err);
+    return null;
+  }
+}
+
+// ─── Get Requester Name from Ticket ───────────────────────
+
+export async function getRequesterName(ticket: FreshserviceTicket): Promise<string | null> {
+  try {
+    if (!ticket.requester_id) return null;
+    const requester = await getRequester(ticket.requester_id);
+    return `${requester.first_name} ${requester.last_name}`.trim();
+  } catch (err) {
+    console.error(`[freshservice] Failed to get requester name for ticket ${ticket.id}:`, err);
+    return null;
+  }
+}
+
+// ─── Get Service Request (Catalog Item) ──────────────────
+
+export async function getServiceRequest(ticketId: number): Promise<any> {
+  const data = await freshserviceFetch<any>(`/tickets/${ticketId}/requested_items`);
+  return data;
+}
+
+// ─── Get Product Owner from Ticket ───────────────────────
+
+export function getProductOwner(ticket: FreshserviceTicket): string | null {
+  // Product Owner is a custom field
+  if (ticket.custom_fields && typeof ticket.custom_fields === "object") {
+    const productOwner = (ticket.custom_fields as any).product_owner;
+    if (productOwner) {
+      return String(productOwner).trim();
+    }
+  }
+  return null;
+}
+
+// ─── Get Region from Ticket ───────────────────────────────
+
+export function getRegion(ticket: FreshserviceTicket): string | null {
+  if (ticket.custom_fields && typeof ticket.custom_fields === "object") {
+    const region = (ticket.custom_fields as any).region;
+    if (region) {
+      return String(region).trim();
+    }
+  }
+  return null;
+}
+
+// ─── Get Client Name from Ticket ──────────────────────────
+
+export function getClientName(ticket: FreshserviceTicket): string | null {
+  if (ticket.custom_fields && typeof ticket.custom_fields === "object") {
+    const clientName = (ticket.custom_fields as any).client_name;
+    if (clientName) {
+      return String(clientName).trim();
+    }
+  }
+  return null;
+}
+
 // ─── Utility ──────────────────────────────────────────────
 
 export function getInitials(firstName: string, lastName: string): string {

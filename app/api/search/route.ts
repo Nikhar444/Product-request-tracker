@@ -2,8 +2,9 @@
 // Frontend calls this — searches Jira by ticket key or text in summary/description
 
 import { NextRequest, NextResponse } from "next/server";
-import { searchByText, searchByKey } from "@/lib/jira";
+import { searchByText, searchByKey, getIssue } from "@/lib/jira";
 import { enrichIssue } from "@/lib/enrich";
+import { getTicketByDisplayId, getJiraKeyFromTicket } from "@/lib/freshservice";
 import type { SearchResponse } from "@/types";
 
 export const maxDuration = 15;
@@ -66,11 +67,52 @@ export async function GET(req: NextRequest) {
         console.log("[search] 3) ✗ No issue found for key:", query);
       }
     }
-    // Strategy 3: If query contains REQ pattern, text search for REQ number
+    // Strategy 3: If query contains REQ pattern, search Freshservice first
     else if (isReqNumber) {
       queryType = "REQ_NUMBER";
-      searchStrategy = `REQ pattern detected → text search for Freshservice REQ number`;
+      searchStrategy = `REQ pattern detected → search Freshservice → get linked Jira ticket`;
       console.log("[search] 2) Strategy:", searchStrategy);
+
+      try {
+        // Try to get the Freshservice ticket
+        const fsTicket = await getTicketByDisplayId(query);
+
+        if (fsTicket) {
+          console.log("[search] 3) ✓ Found Freshservice ticket:", fsTicket.id);
+
+          // Check if it has a linked Jira key
+          const jiraKey = getJiraKeyFromTicket(fsTicket);
+
+          if (jiraKey) {
+            console.log("[search] 4) ✓ Found linked Jira key:", jiraKey);
+
+            // Fetch the Jira issue
+            try {
+              const jiraIssue = await getIssue(jiraKey);
+              const enriched = await enrichIssue(jiraIssue);
+              return NextResponse.json({ results: [enriched], total: 1, query } as SearchResponse);
+            } catch (err) {
+              console.warn("[search] Could not fetch Jira issue:", jiraKey, err);
+            }
+          } else {
+            console.log("[search] 4) ✗ No Jira key linked to Freshservice ticket");
+            // Return a message that the request hasn't been linked yet
+            return NextResponse.json({
+              results: [],
+              total: 0,
+              query,
+              message: "This request has not been linked to a development ticket yet. Please check back later."
+            });
+          }
+        } else {
+          console.log("[search] 3) ✗ No Freshservice ticket found for:", query);
+        }
+      } catch (err) {
+        console.warn("[search] Freshservice lookup failed:", err);
+      }
+
+      // Fallback: try Jira text search for the REQ number
+      console.log("[search] Falling back to Jira text search for REQ number");
     }
     // Strategy 4: Otherwise, general text search by keywords
     else {
