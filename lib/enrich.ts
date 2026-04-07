@@ -8,6 +8,8 @@ import {
   adfToText,
   getRequester,
   getClient,
+  getProductOwner,
+  getSolutionOwner,
   getStage,
   humanizeSprint,
   getJiraUrl,
@@ -38,13 +40,11 @@ export async function enrichIssue(issue: JiraIssue): Promise<EnrichedRequest> {
   const sprintInfo = humanizeSprint(issue.fields.sprint);
   const assigneeName = issue.fields.assignee?.displayName || null;
 
-  // Product manager = assignee for now (customize this if you have a dedicated PM field)
-  const productManager = assigneeName
-    ? {
-        name: assigneeName,
-        initials: assigneeName.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2),
-      }
-    : null;
+  // Product manager comes from the Product Owner custom field
+  const productManager = getProductOwner(issue);
+
+  // Solution owner (tech lead) from custom field
+  const solutionOwner = getSolutionOwner(issue);
 
   const tracker = buildTracker(issue);
 
@@ -63,6 +63,7 @@ export async function enrichIssue(issue: JiraIssue): Promise<EnrichedRequest> {
     client,
     assignee: assigneeName,
     productManager,
+    solutionOwner,
     sprint: sprintInfo,
     sprintEndDate: issue.fields.sprint?.endDate || null,
     url: getJiraUrl(issue.key),
@@ -100,15 +101,29 @@ function buildTracker(issue: JiraIssue): TrackerStep[] {
       status,
     };
 
-    // Attach dates
+    // Attach dates and dynamic subtitles
     if (stage.id === "submitted" && status !== "upcoming") {
       step.date = issue.fields.created;
     }
-    if (stage.id === "development" && issue.fields.sprint && (status === "complete" || status === "current")) {
-      step.subtitle = humanizeSprint(issue.fields.sprint) || undefined;
+
+    // For in_sprint stage, show the sprint name
+    if (stage.id === "in_sprint" && issue.fields.sprint && (status === "complete" || status === "current")) {
+      step.subtitle = issue.fields.sprint.name || undefined;
     }
+
+    // For in_uat stage, override the subtitle
+    if (stage.id === "in_uat" && (status === "complete" || status === "current")) {
+      step.subtitle = "With product manager for UAT";
+    }
+
+    // For released stage, show fix version and date
     if (stage.id === "released" && isDone) {
       step.date = issue.fields.resolutiondate || issue.fields.updated;
+      // Try to show the Fix Version
+      if (issue.fields.fixVersions && issue.fields.fixVersions.length > 0) {
+        const fixVersion = issue.fields.fixVersions[0].name;
+        step.subtitle = fixVersion ? `Released in ${fixVersion}` : "Available in production";
+      }
     }
 
     return step;

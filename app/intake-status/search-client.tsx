@@ -10,6 +10,7 @@ export default function SearchClient() {
   const [selected, setSelected] = useState<EnrichedRequest | null>(null);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [showAllMatches, setShowAllMatches] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Check URL for ?req= param on mount
@@ -27,6 +28,7 @@ export default function SearchClient() {
     setLoading(true);
     setSearched(true);
     setSelected(null);
+    setShowAllMatches(false);
     try {
       const res = await fetch(`/api/search?q=${encodeURIComponent(q.trim())}`);
       const data = await res.json();
@@ -40,11 +42,14 @@ export default function SearchClient() {
     setLoading(false);
   }
 
+  const primaryMatch = results[0];
+  const hasMultipleMatches = results.length > 1;
+
   return (
     <div>
       {/* Search box */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
-        <label className="block text-sm font-medium text-gray-700 mb-2">
+      <div className="bg-white rounded-2xl p-8 mb-8">
+        <label className="block text-gray-900 font-semibold text-base mb-3">
           Request number or keywords
         </label>
         <input
@@ -53,14 +58,17 @@ export default function SearchClient() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && doSearch(query)}
-          placeholder="e.g. DPS-100999 or 'network mismatch'"
-          className="w-full h-10 px-4 border border-gray-300 rounded-lg text-sm
-                     focus:outline-none focus:ring-2 focus:ring-[#5B2D8E] focus:border-transparent"
+          placeholder="e.g. DPS-105431, network mismatch, or REQ-11931267"
+          className="w-full h-12 px-6 border-2 border-gray-300 rounded-full text-base
+                     focus:outline-none focus:ring-0 focus:border-[#5B2D8E] transition-colors"
         />
+        <p className="text-xs text-gray-400 mt-2">
+          Tip: Search by Jira ticket (DPS-xxxxx), keywords from the title, or your Freshservice request number.
+        </p>
         <button
           onClick={() => doSearch(query)}
           disabled={loading || query.trim().length < 2}
-          className="mt-3 h-10 px-6 bg-[#5B2D8E] text-white text-sm font-medium rounded-lg
+          className="mt-4 h-12 px-8 bg-[#5B2D8E] text-white text-base font-semibold rounded-full
                      hover:bg-[#4A2574] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {loading ? "Searching…" : "View status"}
@@ -75,33 +83,119 @@ export default function SearchClient() {
         <NotFoundState query={query} />
       )}
 
-      {/* Multiple results — pick one */}
-      {!loading && results.length > 1 && !selected && (
-        <div className="space-y-3 animate-fade-in">
-          <p className="text-sm text-gray-500">{results.length} results found</p>
-          {results.map((r) => (
+      {/* Results found */}
+      {!loading && results.length > 0 && !selected && !showAllMatches && (
+        <div className="animate-fade-in space-y-6">
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-bold text-gray-900">
+              {hasMultipleMatches ? `${results.length} possible matches` : "1 match found"}
+            </h2>
+            {hasMultipleMatches && (
+              <button
+                onClick={() => setShowAllMatches(true)}
+                className="h-10 px-5 border-2 border-[#5B2D8E] text-[#5B2D8E] text-sm font-semibold rounded-full
+                           hover:bg-[#5B2D8E]/5 transition-colors"
+              >
+                View all {results.length} matches
+              </button>
+            )}
+          </div>
+
+          {/* Subtext */}
+          {!hasMultipleMatches && (
+            <p className="text-[#6B7280] text-[15px]">
+              This is the request you opened. Status and timing are directly below.
+            </p>
+          )}
+
+          {/* Primary match card */}
+          {primaryMatch && <ResultCard request={primaryMatch} onViewDetails={() => setSelected(primaryMatch)} />}
+
+          {/* Bottom links */}
+          {hasMultipleMatches && (
+            <p className="text-sm text-gray-500">
+              Wrong ticket?{" "}
+              <button onClick={() => setShowAllMatches(true)} className="text-[#5B2D8E] underline hover:no-underline">
+                Show all matches
+              </button>{" "}
+              or start a{" "}
+              <a href="/intake-status" className="text-[#5B2D8E] underline hover:no-underline">
+                New search
+              </a>{" "}
+              above.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Show all matches view */}
+      {!loading && showAllMatches && results.length > 1 && (
+        <div className="space-y-4 animate-fade-in">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-bold text-gray-900">{results.length} matches found</h2>
             <button
-              key={r.jiraKey}
-              onClick={() => setSelected(r)}
-              className="w-full text-left bg-white rounded-xl border border-gray-200 p-5
-                         hover:border-[#5B2D8E]/30 hover:shadow-md transition-all"
+              onClick={() => setShowAllMatches(false)}
+              className="text-sm text-[#5B2D8E] hover:underline"
             >
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <span className="text-xs font-mono text-[#5B2D8E] bg-[#F3EEFF] px-2 py-0.5 rounded">
-                    {r.jiraKey}
-                  </span>
-                  <h3 className="mt-1.5 text-sm font-medium text-gray-900 line-clamp-2">{r.summary}</h3>
-                </div>
-                <StatusPill status={r.status} />
-              </div>
+              ← Back to primary match
             </button>
+          </div>
+          {results.map((r) => (
+            <ResultCard key={r.jiraKey} request={r} onViewDetails={() => setSelected(r)} />
           ))}
         </div>
       )}
 
-      {/* Selected result — full detail view */}
+      {/* Detail view */}
       {selected && <DetailView request={selected} onBack={() => setSelected(null)} />}
+    </div>
+  );
+}
+
+// ─── Result Card (Summary View) ───────────────────────────
+
+function ResultCard({ request: r, onViewDetails }: { request: EnrichedRequest; onViewDetails: () => void }) {
+  return (
+    <div className="bg-white rounded-2xl border-2 border-[#5B2D8E] p-6 hover:shadow-lg transition-shadow">
+      {/* Title line */}
+      <h3 className="text-base font-bold text-gray-900 mb-2">
+        {r.client && <span>{r.client} | </span>}
+        {/* Extract REQ number from summary if present */}
+        {r.summary}
+      </h3>
+
+      {/* Product Manager */}
+      {r.productManager && (
+        <p className="text-gray-500 text-sm mb-3">
+          Product manager: {r.productManager.name}
+        </p>
+      )}
+
+      {/* Status pill */}
+      <div className="flex items-center gap-3 mb-3">
+        <StatusPill status={r.status} />
+      </div>
+
+      {/* Planned production */}
+      <p className="text-[15px] font-semibold text-gray-900 mb-1">
+        Planned production: {r.project} · {new Date(r.updatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+      </p>
+
+      {/* Sprint/Release info */}
+      {r.sprint && (
+        <p className="text-sm text-gray-400">
+          {r.sprint}
+        </p>
+      )}
+
+      {/* View details button */}
+      <button
+        onClick={onViewDetails}
+        className="mt-4 text-sm text-[#5B2D8E] font-semibold hover:underline"
+      >
+        View full details →
+      </button>
     </div>
   );
 }
@@ -111,13 +205,13 @@ export default function SearchClient() {
 function DetailView({ request: r, onBack }: { request: EnrichedRequest; onBack: () => void }) {
   return (
     <div className="space-y-5 animate-slide-up">
-      {/* Back button (if multiple results) */}
+      {/* Back button */}
       <button onClick={onBack} className="text-sm text-[#5B2D8E] hover:underline">
         ← Back to results
       </button>
 
       {/* Section A: Header */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <div className="bg-white rounded-2xl border-2 border-[#5B2D8E] p-6">
         <h2 className="text-base font-semibold text-gray-900 leading-snug mb-3">
           {r.client && <span>{r.client} | </span>}
           {r.jiraKey} | {r.summary}
@@ -143,7 +237,7 @@ function DetailView({ request: r, onBack }: { request: EnrichedRequest; onBack: 
 
       {/* Section B: Product Manager */}
       {r.productManager && (
-        <div className="bg-[#F3EEFF] rounded-xl p-5 flex items-center gap-4">
+        <div className="bg-[#F3EEFF] rounded-2xl p-5 flex items-center gap-4">
           <div className="w-10 h-10 rounded-full bg-[#5B2D8E] text-white text-sm font-semibold
                           flex items-center justify-center flex-shrink-0">
             {r.productManager.initials}
@@ -187,7 +281,7 @@ function DetailView({ request: r, onBack }: { request: EnrichedRequest; onBack: 
 
 function PizzaTracker({ steps }: { steps: TrackerStep[] }) {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6">
+    <div className="bg-white rounded-2xl border border-gray-200 p-6">
       <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-5">
         How we get there
       </p>
@@ -248,7 +342,7 @@ function DescriptionSection({ text }: { text: string }) {
   const isLong = text.length > 300;
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6">
+    <div className="bg-white rounded-2xl border border-gray-200 p-6">
       <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-3">
         What this request covers
       </p>
@@ -291,7 +385,7 @@ function SubscriptionBanner({ jiraKey, summary }: { jiraKey: string; summary: st
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+    <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
       {/* Collapsed banner */}
       <button
         onClick={() => setOpen(!open)}
@@ -363,7 +457,7 @@ function SubscriptionBanner({ jiraKey, summary }: { jiraKey: string; summary: st
                 <button
                   onClick={handleSubscribe}
                   disabled={!email || submitting}
-                  className="h-10 px-6 bg-[#5B2D8E] text-white text-sm font-medium rounded-lg
+                  className="h-10 px-6 bg-[#5B2D8E] text-white text-sm font-medium rounded-full
                              hover:bg-[#4A2574] disabled:opacity-50 transition-colors"
                 >
                   {submitting ? "Subscribing…" : "Subscribe to updates"}
@@ -409,7 +503,7 @@ function TypeCard({ selected, onClick, title, desc }: {
 
 function RecentNotes({ notes }: { notes: EnrichedRequest["recentNotes"] }) {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6">
+    <div className="bg-white rounded-2xl border border-gray-200 p-6">
       <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-1">
         Recent notes
       </p>
@@ -463,13 +557,13 @@ function NotFoundState({ query }: { query: string }) {
     <div className="animate-fade-in space-y-4">
       <div className="bg-amber-50 border-l-4 border-amber-500 p-5 rounded-r-lg">
         <p className="text-sm text-amber-900 leading-relaxed">
-          We could not find a request matching that number in this portal yet. Check the number
-          on your confirmation email, watch for typos, or ask your contact. You can ask the
-          product team to look into it using the form below.
+          We could not find a request matching that in Jira. If you have a Freshservice REQ number,
+          try searching by the ticket title or keywords instead. You can also ask the product team
+          to look it up using the form below.
         </p>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <div className="bg-white rounded-2xl border border-gray-200 p-6">
         <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-2">
           Ask product to review
         </p>
@@ -504,7 +598,7 @@ function NotFoundState({ query }: { query: string }) {
             <button
               onClick={handleSend}
               disabled={!email}
-              className="h-10 px-6 bg-[#5B2D8E] text-white text-sm font-medium rounded-lg
+              className="h-10 px-6 bg-[#5B2D8E] text-white text-sm font-medium rounded-full
                          hover:bg-[#4A2574] disabled:opacity-50 transition-colors"
             >
               Send to product
@@ -527,6 +621,9 @@ function StatusPill({ status, small }: { status: string; small?: boolean }) {
     "In Review": "bg-amber-50 text-amber-700 border-amber-200",
     "Ready for QA": "bg-blue-50 text-blue-700 border-blue-200",
     "UAT": "bg-blue-50 text-blue-700 border-blue-200",
+    "Ready for UAT": "bg-blue-50 text-blue-700 border-blue-200",
+    "Ready to Deploy": "bg-purple-50 text-purple-700 border-purple-200",
+    "Ready for Deploy": "bg-purple-50 text-purple-700 border-purple-200",
   };
   const color = colors[status] || "bg-gray-50 text-gray-600 border-gray-200";
 
@@ -542,12 +639,12 @@ function StatusPill({ status, small }: { status: string; small?: boolean }) {
 function LoadingSkeleton() {
   return (
     <div className="space-y-4 animate-pulse">
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <div className="bg-white rounded-2xl border border-gray-200 p-6">
         <div className="h-4 w-64 bg-gray-200 rounded mb-3" />
         <div className="h-3 w-48 bg-gray-100 rounded mb-2" />
         <div className="h-3 w-32 bg-gray-100 rounded" />
       </div>
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <div className="bg-white rounded-2xl border border-gray-200 p-6">
         <div className="h-3 w-24 bg-gray-200 rounded mb-4" />
         <div className="flex gap-4 mb-4">
           <div className="w-8 h-8 bg-gray-200 rounded-full" />

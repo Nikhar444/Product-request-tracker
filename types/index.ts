@@ -78,9 +78,8 @@ export interface JiraChangelogItem {
 export type PizzaTrackerStage =
   | "submitted"
   | "under_review"
-  | "scope_confirmed"
-  | "development"
-  | "uat"
+  | "in_sprint"
+  | "in_uat"
   | "released";
 
 export interface TrackerStep {
@@ -112,8 +111,11 @@ export interface EnrichedRequest {
   // Assignee
   assignee: string | null;
 
-  // PM (mapped from Jira — could be assignee or a custom field)
+  // PM (Product Owner from custom field)
   productManager: { name: string; initials: string } | null;
+
+  // Solution Owner (Tech Lead from custom field)
+  solutionOwner?: { name: string; initials: string } | null;
 
   // Sprint
   sprint: string | null;
